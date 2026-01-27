@@ -1,0 +1,7 @@
+.battery_cache
+.battery_launchd_stderr.log
+.battery_launchd_stdout.log
+.battery_monitor.log
+.battery_state
+.last_notification
+

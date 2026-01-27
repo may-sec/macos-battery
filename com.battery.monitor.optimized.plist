@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unique identifier for this LaunchAgent -->
+    <key>Label</key>
+    <string>com.battery.monitor.optimized</string>
+    
+    <!-- Command to execute -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/YOUR_USERNAME/battery/battery_monitor.sh</string>
+    </array>
+    
+    <!-- Run every 60 seconds (1 minute) - script exits early if no changes -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+    
+    <!-- Also watch for power management changes (triggers immediately on power state change) -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/Library/Preferences/SystemConfiguration/com.apple.PowerManagement.plist</string>
+    </array>
+    
+    <!-- Start when user logs in -->
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <!-- Don't keep it running continuously (it exits after each run) -->
+    <key>KeepAlive</key>
+    <false/>
+    
+    <!-- Run with low priority (nice value 10 = less CPU priority) -->
+    <key>Nice</key>
+    <integer>10</integer>
+    
+    <!-- Enable logging for debugging -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/battery/.battery_launchd_stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/battery/.battery_launchd_stderr.log</string>
+    
+    <!-- Resource limits -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>256</integer>
+    </dict>
+    
+    <!-- Set PATH environment variable -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    
+    <!-- Process type (run in background) -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    
+    <!-- Throttle interval (prevent rapid restarts) -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
