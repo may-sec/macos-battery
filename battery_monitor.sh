@@ -1,6 +1,6 @@
-#battery_monitor.sh
 #!/bin/bash
 
+#battery_monitor.sh
 # ============================================
 # LOGGING WRAPPER FOR LAUNCHAGENT
 # ============================================
@@ -302,20 +302,22 @@ if [ -f "$STATE_FILE" ]; then
     
     # If more than 30 minutes elapsed, likely woke from sleep
     if [ "${TIME_ELAPSED:-0}" -gt 1800 ] 2>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Wake from sleep detected (${TIME_ELAPSED}s elapsed)" >> "$LOG_FILE"
-        FORCE_FULL_CHECK=1
+        # Only log significant wakes (>2 hours OR significant drain)
+        SHOULD_LOG_WAKE=0
         
         # Check if battery drained significantly during sleep
         if [ "$CURRENT_PCT" != "$LAST_PCT" ]; then
             PCT_CHANGE=$((CURRENT_PCT - LAST_PCT))
+            
             if [ "${PCT_CHANGE:-0}" -lt -5 ] 2>/dev/null; then
-                # Drained more than 5% during sleep
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Significant drain during sleep: ${LAST_PCT}% → ${CURRENT_PCT}% (${PCT_CHANGE}%)" >> "$LOG_FILE"
+                # Significant drain - always log this
+                SHOULD_LOG_WAKE=1
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Sleep drain: ${LAST_PCT}% → ${CURRENT_PCT}% (${PCT_CHANGE}% in $(($TIME_ELAPSED / 60))min)" >> "$LOG_FILE"
                 
                 # Show notification about drain
                 if should_notify "SLEEP_DRAIN" 3600; then
                     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📢 Sending sleep drain notification" >> "$LOG_FILE"
-                    osascript -e "display notification \"Battery drained ${PCT_CHANGE#-}% while asleep (${LAST_PCT}% → ${CURRENT_PCT}%)\" with title \"⚠️ Sleep Battery Drain\" sound name \"Basso\"" 2>> "$LOG_FILE"
+                    osascript -e "display notification \"Battery drained ${PCT_CHANGE#-}% while asleep (${LAST_PCT}% → ${CURRENT_PCT}%) in $(($TIME_ELAPSED / 60)) minutes\" with title \"⚠️ Sleep Battery Drain\" sound name \"Basso\"" 2>> "$LOG_FILE"
                     if [ $? -eq 0 ]; then
                         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Notification sent successfully" >> "$LOG_FILE"
                     else
@@ -326,6 +328,13 @@ if [ -f "$STATE_FILE" ]; then
                 fi
             fi
         fi
+        
+        # Log extended sleep (>2 hours) even without drain
+        if [ "${TIME_ELAPSED:-0}" -gt 7200 ] 2>/dev/null && [ $SHOULD_LOG_WAKE -eq 0 ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Extended sleep ($(($TIME_ELAPSED / 3600))h $(($TIME_ELAPSED % 3600 / 60))m)" >> "$LOG_FILE"
+        fi
+        
+        FORCE_FULL_CHECK=1
     fi
 else
     LAST_PCT=""
@@ -946,7 +955,9 @@ if [ -n "$LOG_ENTRY" ]; then
     echo "$LOG_ENTRY" >> "$LOG_FILE"
 fi
 
+# ============================================
 # CHECK FOR CYCLE INCREASE (RARE EVENT)
+# ============================================
 if [ $FORCE_FULL_CHECK -eq 1 ] || \
    ( [ -n "$CURRENT_CYCLE" ] && [ -n "$LAST_CYCLE" ] && \
      [ "$LAST_CYCLE" != "0" ] && \
@@ -957,7 +968,21 @@ if [ $FORCE_FULL_CHECK -eq 1 ] || \
         LAST_CYCLE=$((CURRENT_CYCLE - 1))
     fi
     
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔄 CYCLE CHECK: $LAST_CYCLE → $CURRENT_CYCLE" >> "$LOG_FILE"
+    # Only log as "CYCLE INCREASED" if it actually increased (not just test mode)
+    if [ -n "$CURRENT_CYCLE" ] && [ -n "$LAST_CYCLE" ] && \
+       [ "$LAST_CYCLE" != "0" ] && \
+       [ "${CURRENT_CYCLE:-0}" -gt "${LAST_CYCLE:-0}" ] 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔄 CYCLE INCREASED: $LAST_CYCLE → $CURRENT_CYCLE" >> "$LOG_FILE"
+        
+        # Send quick notification first
+        osascript -e "display notification \"Cycle count increased to ${CURRENT_CYCLE}. Health: ${HEALTH_PCT}%\" with title \"🔋 Battery Cycle Increased\" subtitle \"${LAST_CYCLE} → ${CURRENT_CYCLE}\" sound name \"Glass\"" 2>> "$LOG_FILE"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔄 CYCLE CHECK (Test Mode): $LAST_CYCLE → $CURRENT_CYCLE" >> "$LOG_FILE"
+    fi
+
+    # Send quick notification first
+    osascript -e "display notification \"Cycle count increased to ${CURRENT_CYCLE}. Health: ${HEALTH_PCT}%\" with title \"🔋 Battery Cycle Increased\" subtitle \"${LAST_CYCLE} → ${CURRENT_CYCLE}\" sound name \"Glass\"" 2>> "$LOG_FILE"
+
     
     # Fetch detailed info (expensive operations)
     # Try cache first, then fetch if needed
@@ -1008,57 +1033,14 @@ if [ $FORCE_FULL_CHECK -eq 1 ] || \
 
     # Extended logging - write detailed info to log file
     echo "" >> "$LOG_FILE"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$LOG_FILE"
-    echo "🔄 BATTERY CYCLE INCREASED: $LAST_CYCLE → $CURRENT_CYCLE" >> "$LOG_FILE"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$LOG_FILE"
-    echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    
-    echo "📊 STATUS" >> "$LOG_FILE"
-    echo "├─ Battery Level:    $PERCENTAGE% (SoC: $SOC%)" >> "$LOG_FILE"
-    echo "├─ Power Source:     $CHARGING" >> "$LOG_FILE"
-    echo "├─ Charging Mode:    $BATTERY_MODE" >> "$LOG_FILE"
-    echo "└─ Time Remaining:   ${TIME_REMAINING:-N/A}" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    
-    echo "🏥 HEALTH" >> "$LOG_FILE"
-    echo "├─ Condition:        ${HEALTH:-Normal}" >> "$LOG_FILE"
-    echo "├─ Health:           $HEALTH_PCT%" >> "$LOG_FILE"
-    echo "├─ Current Capacity: ${CURRENT_CAP}mAh" >> "$LOG_FILE"
-    echo "├─ Max Capacity:     ${MAX_CAP}mAh" >> "$LOG_FILE"
-    echo "├─ Design Capacity:  ${DESIGN_CAP}mAh" >> "$LOG_FILE"
-    echo "└─ Nominal Capacity: ${NOMINAL_CAP}mAh" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    
-    echo "⚡ POWER" >> "$LOG_FILE"
-    echo "├─ Temperature:      ${TEMP}°C" >> "$LOG_FILE"
-    echo "├─ Voltage:          ${VOLTAGE}mV" >> "$LOG_FILE"
-    echo "├─ Current:          ${CHARGE_RATE}" >> "$LOG_FILE"
-    echo "└─ Power Draw:       ${POWER}W" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    
-    echo "🔬 CELL ANALYSIS" >> "$LOG_FILE"
-    echo "├─ Cell Voltages:    ${CELL_VOLTAGES}mV" >> "$LOG_FILE"
-    echo "├─ Balance Stats:    ${CELL_STATS}" >> "$LOG_FILE"
-    echo "├─ Qmax Values:      ${QMAX_VALUES}mAh" >> "$LOG_FILE"
-    echo "├─ Depth of Disch:   ${PRESENT_DOD}%" >> "$LOG_FILE"
-    echo "└─ Resistance (Ra):  ${WEIGHTED_RA}mΩ" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    
-    echo "📈 LIFETIME STATISTICS" >> "$LOG_FILE"
-    echo "├─ Estimated Life:   ${LIFESPAN}" >> "$LOG_FILE"
-    echo "├─ Total Runtime:    ${TOTAL_RUNTIME}" >> "$LOG_FILE"
-    echo "├─ Temp Range:       ${MIN_TEMP_EVER}°C - ${MAX_TEMP_EVER}°C (Avg: ${AVG_TEMP_LIFETIME}°C)" >> "$LOG_FILE"
-    echo "├─ Voltage History:  Min:${MIN_VOLT_EVER}mV Max:${MAX_VOLT_EVER}mV" >> "$LOG_FILE"
-    echo "├─ Current History:  Charge:${MAX_CHARGE_EVER}mA Discharge:${MAX_DISCHARGE_EVER}mA" >> "$LOG_FILE"
-    echo "├─ Last Calibration: Cycle ${LAST_CAL_CYCLE}" >> "$LOG_FILE"
-    echo "└─ Daily SoC Range:  ${DAILY_MIN_SOC}% - ${DAILY_MAX_SOC}%" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    
-    echo "📅 BATTERY INFORMATION" >> "$LOG_FILE"
-    echo "├─ Manufactured:     ${MFG_DATE}" >> "$LOG_FILE"
-    echo "└─ Serial Number:    ${BATTERY_SERIAL}" >> "$LOG_FILE"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$LOG_FILE"
+
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | 🔄 CYCLE INCREASED: $LAST_CYCLE → $CURRENT_CYCLE" >> "$LOG_FILE"
+    echo "📊 STATUS: Battery Level: $PERCENTAGE% (SoC:$SOC%) | Power Source: $CHARGING | Charging Mode: $BATTERY_MODE | Time Remaining: ${TIME_REMAINING:-N/A}" >> "$LOG_FILE"
+    echo "🏥 HEALTH: Condition: ${HEALTH:-Normal} | Health: $HEALTH_PCT% | Current Capacity: ${CURRENT_CAP}mAh | Max Capacity: ${MAX_CAP}mAh | Design Capacity: ${DESIGN_CAP}mAh | Nominal Capacity: ${NOMINAL_CAP}mAh" >> "$LOG_FILE"
+    echo "⚡ POWER: Temperature: ${TEMP}°C | Voltage: ${VOLTAGE}mV | Current: ${CHARGE_RATE} | Power Draw: ${POWER}W" >> "$LOG_FILE"
+    echo "🔬 CELL ANALYSIS: Cell Voltages: ${CELL_VOLTAGES}mV | Balance Stats: ${CELL_STATS} | Qmax Values: ${QMAX_VALUES}mAh | Depth of Discharge: ${PRESENT_DOD}% | Resistance (Ra): ${WEIGHTED_RA}mΩ" >> "$LOG_FILE"
+    echo "📈 LIFETIME STATISTICS: Estimated Life: ${LIFESPAN} | Total Runtime: ${TOTAL_RUNTIME} | Temp Range: ${MIN_TEMP_EVER}-${MAX_TEMP_EVER}°C (Avg:${AVG_TEMP_LIFETIME}°C) | Voltage History: ${MIN_VOLT_EVER}-${MAX_VOLT_EVER}mV | Current History: MaxCharge:${MAX_CHARGE_EVER}mA MaxDischarge:${MAX_DISCHARGE_EVER}mA | Last Calibration: Cycle ${LAST_CAL_CYCLE} | Daily SoC Range: ${DAILY_MIN_SOC}-${DAILY_MAX_SOC}%" >> "$LOG_FILE"
+    echo "📅 BATTERY INFORMATION: Manufactured: ${MFG_DATE} | Serial Number: ${BATTERY_SERIAL}" >> "$LOG_FILE"
     echo "" >> "$LOG_FILE"
     
 # Calculate current capacity percentage
@@ -1137,7 +1119,7 @@ LAST_CHECK_TIME=$CURRENT_TIME
 EOF
 
 # ============================================
-# ENHANCED HEALTH WARNINGS
+# ENHANCED HEALTH WARNINGS & ALERTS
 # ============================================
 
 # 1. Battery health warning (once per day)
@@ -1150,6 +1132,10 @@ if [ "$HEALTH_PCT" != "N/A" ]; then
             MAX_CYCLES=1000
             CYCLES_REMAINING=$((MAX_CYCLES - CYCLES))
             
+            # Send notification first (quick)
+            osascript -e "display notification \"Battery health at ${HEALTH_PCT}%. Service may be needed soon.\" with title \"⚠️ Battery Health Warning\" subtitle \"Cycle ${CYCLES}/${MAX_CYCLES}\" sound name \"Basso\"" 2>> "$LOG_FILE"
+            
+            # Then show detailed popup
             osascript <<OSASCRIPT_EOF
 set theResponse to button returned of (display dialog "⚠️ BATTERY HEALTH LOW
 
@@ -1176,7 +1162,7 @@ OSASCRIPT_EOF
     fi
 fi
 
-# 2. Current temperature warning
+# 2. Current temperature warning (>45°C)
 if [ "$TEMP" != "N/A" ]; then
     TEMP_NUM=$(echo "$TEMP" | cut -d. -f1)
     if [ -n "$TEMP_NUM" ] && [ "$TEMP_NUM" -gt 45 ] 2>/dev/null; then
@@ -1184,6 +1170,10 @@ if [ "$TEMP" != "N/A" ]; then
             # Get lifetime max for context
             LIFETIME_MAX=${MAX_TEMP_EVER:-$(get_max_temp_ever)}
             
+            # Send notification first (quick)
+            osascript -e "display notification \"Battery temperature: ${TEMP}°C. Allow device to cool down.\" with title \"🌡️ High Temperature Alert\" subtitle \"Lifetime Max: ${LIFETIME_MAX}°C\" sound name \"Sosumi\"" 2>> "$LOG_FILE"
+            
+            # Then show detailed popup
             osascript <<OSASCRIPT_EOF
 set theResponse to button returned of (display dialog "🌡️ HIGH BATTERY TEMPERATURE
 
@@ -1210,25 +1200,42 @@ OSASCRIPT_EOF
     fi
 fi
 
-# 3. NEW: Lifetime maximum temperature warning (once per week)
+# 3. Lifetime maximum temperature warning (once per week)
 MAX_TEMP_EVER=${MAX_TEMP_EVER:-$(get_max_temp_ever)}
 if [ "$MAX_TEMP_EVER" != "N/A" ]; then
     MAX_TEMP_NUM=$(echo "$MAX_TEMP_EVER" | cut -d. -f1)
     if [ -n "$MAX_TEMP_NUM" ] && [ "$MAX_TEMP_NUM" -gt 45 ] 2>/dev/null; then
         if should_notify "MAX_TEMP_EVER" 604800; then  # 7 days
+            # Send notification first (quick)
+            osascript -e "display notification \"Battery exposed to ${MAX_TEMP_EVER}°C. High heat accelerates aging.\" with title \"⚠️ Heat Stress Detected\" subtitle \"Lifetime Maximum Temperature\" sound name \"Basso\"" 2>> "$LOG_FILE"
+            
+            # Then show detailed popup
             osascript <<OSASCRIPT_EOF
-            set theResponse to button returned of (display dialog "Battery has been exposed to ${MAX_TEMP_EVER}°C. High heat accelerates aging." buttons {"View Details", "OK"} default button "OK" with title "⚠️ Heat Stress Detected" with icon caution giving up after 20)
+set theResponse to button returned of (display dialog "⚠️ HEAT STRESS DETECTED
 
-            if theResponse is "View Details" then
-                do shell script "open -a TextEdit '$LOG_FILE'"
-            end if
+🌡️ Lifetime Max Temperature: ${MAX_TEMP_EVER}°C
+
+⚠️ Impact:
+   • High heat accelerates battery aging
+   • Reduces maximum capacity over time
+   • May shorten overall battery lifespan
+
+💡 Prevention:
+   • Avoid leaving in hot environments
+   • Don't charge in direct sunlight
+   • Remove case during intensive tasks
+   • Keep device well-ventilated" buttons {"View Details", "OK"} default button "OK" with title "Heat Stress Detected" with icon caution giving up after 20)
+
+if theResponse is "View Details" then
+    do shell script "open -a TextEdit '$LOG_FILE'"
+end if
 OSASCRIPT_EOF
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Lifetime Max Temp: ${MAX_TEMP_EVER}°C" >> "$LOG_FILE"
         fi
     fi
 fi
 
-# 4. Cell voltage imbalance warning
+# 4. Cell voltage imbalance warning (>50mV)
 CELL_VOLTAGES=${CELL_VOLTAGES:-$(get_cell_voltages)}
 if [ "$CELL_VOLTAGES" != "N/A" ]; then
     IFS=',' read -ra CELLS <<< "$CELL_VOLTAGES"
@@ -1246,11 +1253,17 @@ if [ "$CELL_VOLTAGES" != "N/A" ]; then
                 # Calculate severity
                 SEVERITY="MODERATE"
                 ICON="caution"
+                SOUND="Basso"
                 if [ "$CELL_DIFF" -gt 100 ]; then
                     SEVERITY="SEVERE"
                     ICON="stop"
+                    SOUND="Sosumi"
                 fi
                 
+                # Send notification first (quick)
+                osascript -e "display notification \"Cell voltage difference: ${CELL_DIFF}mV. Calibration recommended.\" with title \"⚡ Cell Imbalance (${SEVERITY})\" subtitle \"Cells: ${CELL_VOLTAGES}mV\" sound name \"${SOUND}\"" 2>> "$LOG_FILE"
+                
+                # Then show detailed popup
                 osascript <<OSASCRIPT_EOF
 set theResponse to button returned of (display dialog "⚡ CELL VOLTAGE IMBALANCE
 
@@ -1284,71 +1297,323 @@ OSASCRIPT_EOF
     fi
 fi
 
-# 5. NEW: Calibration reminder (once per month if >50 cycles since last cal)
+# 5. Calibration reminder (>50 cycles since last cal)
 NEEDS_CAL=$(needs_calibration)
 if [[ "$NEEDS_CAL" == YES* ]]; then
     if should_notify "CALIBRATION_REMINDER" 2592000; then  # 30 days
+        # Send notification first (quick)
+        osascript -e "display notification \"$NEEDS_CAL\" with title \"🔧 Calibration Recommended\" subtitle \"Maintains accurate battery readings\" sound name \"Ping\"" 2>> "$LOG_FILE"
+        
+        # Then show detailed popup
         osascript <<OSASCRIPT_EOF
-        set theResponse to button returned of (display dialog "$NEEDS_CAL
+set theResponse to button returned of (display dialog "🔧 CALIBRATION RECOMMENDED
 
-To calibrate:
-1. Fully charge to 100%
-2. Use normally until <5%
-3. Fully charge to 100% again
+$NEEDS_CAL
 
-This helps maintain accurate readings." buttons {"View Details", "OK"} default button "OK" with title "🔧 Calibration Recommended" with icon note giving up after 30)
+📋 How to Calibrate:
+   1. Fully charge to 100%
+   2. Keep plugged for 2 more hours
+   3. Use normally until battery < 5%
+   4. Fully charge back to 100%
+   5. Keep plugged for 2 more hours
 
-        if theResponse is "View Details" then
-            do shell script "open -a TextEdit '$LOG_FILE'"
-        end if
+✅ Benefits:
+   • Accurate battery percentage readings
+   • Improved capacity estimates
+   • Better power management
+
+This process takes 1-2 charge cycles." buttons {"View Details", "OK"} default button "OK" with title "Calibration Recommended" with icon note giving up after 30)
+
+if theResponse is "View Details" then
+    do shell script "open -a TextEdit '$LOG_FILE'"
+end if
 OSASCRIPT_EOF
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔧 Calibration Reminder: $NEEDS_CAL" >> "$LOG_FILE"
     fi
 fi
 
-# 6. Low battery warning (existing - keep as is)
+# 6. Low battery warning (≤20%)
 if [ -n "$PERCENTAGE" ] && [ "$PERCENTAGE" -le 20 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
     if should_notify "LOW_BATTERY" 600; then
+        # Send notification first (quick)
+        osascript -e "display notification \"Battery at $PERCENTAGE%. Please charge soon.\" with title \"🔋 Low Battery\" subtitle \"Connect charger\" sound name \"Ping\"" 2>> "$LOG_FILE"
+        
+        # Then show detailed popup
         osascript <<OSASCRIPT_EOF
-        set theResponse to button returned of (display dialog "Battery at $PERCENTAGE%. Please charge soon." buttons {"View Details", "OK"} default button "OK" with title "🔋 Low Battery" with icon caution giving up after 20)
+set theResponse to button returned of (display dialog "🔋 LOW BATTERY
 
-        if theResponse is "View Details" then
-            do shell script "open -a TextEdit '$LOG_FILE'"
-        end if
+⚠️ Battery Level: $PERCENTAGE%
+${TIME_REMAINING:+⏱️ Time Remaining: $TIME_REMAINING}
+⚡ Power Draw: ${POWER}W
+
+💡 Recommendation:
+Connect your charger soon to avoid unexpected shutdown.
+
+Current battery health: ${HEALTH_PCT}%" buttons {"View Details", "OK"} default button "OK" with title "Low Battery Warning" with icon caution giving up after 20)
+
+if theResponse is "View Details" then
+    do shell script "open -a TextEdit '$LOG_FILE'"
+end if
 OSASCRIPT_EOF
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔋 Low Battery: $PERCENTAGE%" >> "$LOG_FILE"
     fi
 fi
 
-# 7. Critical battery warning (existing - keep as is)
-if [ -n "$PERCENTAGE" ] && [ "$PERCENTAGE" -le 10 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
-    osascript <<OSASCRIPT_EOF
-    set theResponse to button returned of (display dialog "Battery critically low at $PERCENTAGE%!" buttons {"View Details", "OK"} default button "OK" with title "⚠️ CRITICAL: Charge Now!" with icon stop giving up after 15)
-
-    if theResponse is "View Details" then
-        do shell script "open -a TextEdit '$LOG_FILE'"
-    end if
-OSASCRIPT_EOF
+# 6. Good level warning (>=80%)
+if [ -n "$PERCENTAGE" ] && [ "$PERCENTAGE" -ge 80 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
+    if should_notify "GOOD_BATTERY" 1800; then
+        # Send notification first (quick)
+        osascript -e "display notification \"Battery at $PERCENTAGE%. Looking good!\" with title \"🔋 Battery Healthy\" subtitle \"Plenty of charge remaining\" sound name \"Ping\"" 2>> "$LOG_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔋 Good Battery: $PERCENTAGE%" >> "$LOG_FILE"
+    fi
 fi
 
-# 8. Fully charged notification - once per hour (1 hour = 60 minutes)
+# 7. Critical battery warning (≤10%)
+if [ -n "$PERCENTAGE" ] && [ "$PERCENTAGE" -le 10 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
+    # Send notification first (quick)
+    osascript -e "display notification \"Battery critically low at $PERCENTAGE%! Connect charger immediately.\" with title \"⚠️ CRITICAL: Charge Now!\" subtitle \"System may shut down soon\" sound name \"Sosumi\"" 2>> "$LOG_FILE"
+    
+    # Then show detailed popup
+    osascript <<OSASCRIPT_EOF
+set theResponse to button returned of (display dialog "⚠️ CRITICAL BATTERY LEVEL
+
+🔴 Battery: $PERCENTAGE%
+${TIME_REMAINING:+⏱️ Estimated: $TIME_REMAINING}
+
+⚠️ WARNING:
+System may shut down at any moment without further warning.
+
+🔌 ACTION REQUIRED:
+Connect charger immediately and save all work!" buttons {"View Details", "OK"} default button "OK" with title "CRITICAL: Charge Now!" with icon stop giving up after 15)
+
+if theResponse is "View Details" then
+    do shell script "open -a TextEdit '$LOG_FILE'"
+end if
+OSASCRIPT_EOF
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔴 Critical Battery: $PERCENTAGE%" >> "$LOG_FILE"
+fi
+
+# 8. Fully charged notification (100%)
 if pmset -g batt | grep -q "charged" && [ "$CHARGING" == "AC Power" ]; then
     if should_notify "FULLY_CHARGED" 3600; then
-        
         osascript <<OSASCRIPT_EOF
 display notification "Unplug to preserve battery health" with title "✅ Battery Fully Charged (100%)" subtitle "Cycle ${CURRENT_CYCLE} | Health ${HEALTH_PCT}%" sound name "Hero"
 OSASCRIPT_EOF
-        
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Fully charged: ${PERCENTAGE}% | Cycle: ${CURRENT_CYCLE} | Health: ${HEALTH_PCT}%" >> "$LOG_FILE"
     fi
 fi
 
+# 9. High power consumption warning (>15W)
+if [ "$POWER" != "N/A" ]; then
+    POWER_NUM=$(echo "$POWER" | cut -d. -f1)
+    if [ -n "$POWER_NUM" ] && [ "$POWER_NUM" -gt 15 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
+        if should_notify "HIGH_POWER" 1800; then  # 30 minutes
+            # Send notification first (quick)
+            osascript -e "display notification \"High power draw: ${POWER}W. Battery draining rapidly.\" with title \"⚡ High Power Consumption\" subtitle \"Check Activity Monitor\" sound name \"Basso\"" 2>> "$LOG_FILE"
+            
+            # Then show detailed popup
+            osascript <<OSASCRIPT_EOF
+set theResponse to button returned of (display dialog "⚡ HIGH POWER CONSUMPTION
+
+🔋 Current Draw: ${POWER}W
+📊 Battery: $PERCENTAGE%
+⚠️ Draining faster than normal
+
+💡 Suggestions:
+   • Check Activity Monitor for heavy apps
+   • Reduce screen brightness
+   • Close unused applications
+   • Consider plugging in charger
+
+⏱️ At this rate:
+Battery will drain significantly faster than expected." buttons {"Activity Monitor", "OK"} default button "OK" with title "High Power Usage Alert" with icon caution giving up after 25)
+
+if theResponse is "Activity Monitor" then
+    do shell script "open -a 'Activity Monitor'"
+end if
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚡ High Power: ${POWER}W" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# 10. Battery not charging (AC but amperage ~0)
+if [ "$CHARGING" == "AC Power" ]; then
+    AMPERAGE_NUM=$(echo "$AMPERAGE" | grep -Eo '^-?[0-9]+' || echo "0")
+    
+    if [ -n "$AMPERAGE_NUM" ] && [ "$AMPERAGE_NUM" -lt 100 ] 2>/dev/null && \
+       [ "$AMPERAGE_NUM" -gt -100 ] 2>/dev/null && [ "$PERCENTAGE" -lt 95 ] 2>/dev/null; then
+        if should_notify "NOT_CHARGING" 1800; then  # 30 minutes
+            # Send notification first (quick)
+            osascript -e "display notification \"Charger connected but battery not charging (${AMPERAGE_NUM}mA).\" with title \"🔌 Charging Issue\" subtitle \"Check connections\" sound name \"Basso\"" 2>> "$LOG_FILE"
+            
+            # Then show detailed popup
+            osascript <<OSASCRIPT_EOF
+set theResponse to button returned of (display dialog "🔌 CHARGER CONNECTED BUT NOT CHARGING
+
+📊 Status:
+   • Power: AC Connected
+   • Battery: ${PERCENTAGE}%
+   • Current: ${AMPERAGE_NUM}mA (too low)
+   • Temperature: ${TEMP}°C
+
+⚠️ Possible Causes:
+   • Faulty charger/cable
+   • Optimized charging hold
+   • Battery temperature too high/low
+   • Power adapter insufficient
+
+💡 Try:
+   • Check cable connections
+   • Use different power adapter
+   • Check if temp is in safe range (10-35°C)
+   • Restart if issue persists" buttons {"View Details", "OK"} default button "OK" with title "Charging Issue Detected" with icon caution giving up after 30)
+
+if theResponse is "View Details" then
+    do shell script "open -a TextEdit '$LOG_FILE'"
+end if
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔌 Not charging: ${PERCENTAGE}% | ${AMPERAGE_NUM}mA | Temp: ${TEMP}°C" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# 11. Rapid battery drain (>10% per 30 minutes)
+if [ "$CHARGING" == "Battery Power" ] && [ -n "$LAST_PCT" ] && [ "$LAST_PCT" != "" ]; then
+    PCT_CHANGE=$((CURRENT_PCT - LAST_PCT))
+    TIME_DIFF=$((CURRENT_TIME - LAST_CHECK_TIME))
+    
+    if [ "$TIME_DIFF" -gt 0 ] 2>/dev/null; then
+        DRAIN_RATE_30MIN=$(echo "scale=1; ($PCT_CHANGE * 1800) / $TIME_DIFF" | bc 2>/dev/null || echo "0")
+        DRAIN_RATE_NUM=$(echo "$DRAIN_RATE_30MIN" | cut -d. -f1 2>/dev/null || echo "0")
+        
+        if [ -n "$DRAIN_RATE_NUM" ] && [ "$DRAIN_RATE_NUM" -lt -10 ] 2>/dev/null; then
+            if should_notify "RAPID_DRAIN" 3600; then  # 1 hour
+                ESTIMATED_TIME=$((CURRENT_PCT * 30 / (-1 * DRAIN_RATE_NUM)))
+                
+                # Send notification first (quick)
+                osascript -e "display notification \"Draining ${DRAIN_RATE_30MIN#-}% per 30min. ~${ESTIMATED_TIME}min remaining.\" with title \"⚠️ Rapid Battery Drain\" subtitle \"Power: ${POWER}W\" sound name \"Basso\"" 2>> "$LOG_FILE"
+                
+                # Then show detailed popup
+                osascript <<OSASCRIPT_EOF
+set theResponse to button returned of (display dialog "⚠️ RAPID BATTERY DRAIN DETECTED
+
+📉 Drain Rate: ${DRAIN_RATE_30MIN#-}% per 30 minutes
+🔋 Current: ${CURRENT_PCT}%
+⏱️ Estimated Time: ~${ESTIMATED_TIME} minutes remaining
+
+⚡ Current Power: ${POWER}W
+📊 ${CHARGE_RATE}
+
+💡 Actions to Take:
+   • Check Activity Monitor for CPU hogs
+   • Reduce screen brightness
+   • Close unused applications
+   • Disable Bluetooth if not needed
+   • Consider charging soon
+
+This drain rate is significantly higher than normal." buttons {"Activity Monitor", "OK"} default button "OK" with title "Rapid Battery Drain" with icon stop giving up after 25)
+
+if theResponse is "Activity Monitor" then
+    do shell script "open -a 'Activity Monitor'"
+end if
+OSASCRIPT_EOF
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Rapid drain: ${DRAIN_RATE_30MIN}%/30min | Power: ${POWER}W" >> "$LOG_FILE"
+            fi
+        fi
+    fi
+fi
+
+# 12. Slow charging warning (<500mA)
+if [ "$CHARGING" == "AC Power" ] && [ "$PERCENTAGE" -lt 95 ] 2>/dev/null; then
+    AMPERAGE_NUM=$(echo "$AMPERAGE" | grep -Eo '^-?[0-9]+' || echo "0")
+    
+    if [ -n "$AMPERAGE_NUM" ] && [ "$AMPERAGE_NUM" -gt 0 ] 2>/dev/null && \
+       [ "$AMPERAGE_NUM" -lt 500 ] 2>/dev/null; then
+        if should_notify "SLOW_CHARGING" 3600; then  # 1 hour
+            # Send notification first (quick)
+            osascript -e "display notification \"Charging slowly at ${AMPERAGE_NUM}mA. Use higher wattage charger.\" with title \"🐌 Slow Charging\" subtitle \"Expected: >1000mA\" sound name \"Ping\"" 2>> "$LOG_FILE"
+            
+            # Then show detailed popup
+            osascript <<OSASCRIPT_EOF
+set theResponse to button returned of (display dialog "🐌 SLOW CHARGING DETECTED
+
+⚡ Charging Rate: ${AMPERAGE_NUM}mA
+   Expected: >1000mA for normal charging
+🔋 Battery: ${PERCENTAGE}%
+🌡️ Temperature: ${TEMP}°C
+
+⚠️ Possible Causes:
+   • Weak power adapter (use 60W+ for MacBook)
+   • Long or damaged cable
+   • USB-C port instead of MagSafe
+   • Background tasks consuming power
+   • Battery temperature regulation
+
+💡 To Fix:
+   • Use original Apple charger
+   • Try different power outlet
+   • Close intensive applications
+   • Let battery cool if temperature high
+   • Check cable for damage" buttons {"View Details", "OK"} default button "OK" with title "Slow Charging Alert" with icon caution giving up after 30)
+
+if theResponse is "View Details" then
+    do shell script "open -a TextEdit '$LOG_FILE'"
+end if
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🐌 Slow charging: ${AMPERAGE_NUM}mA | Temp: ${TEMP}°C" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# 13. Battery kept at 100% too long (>8 hours)
+if [ "$PERCENTAGE" -eq 100 ] 2>/dev/null && [ "$CHARGING" == "AC Power" ]; then
+    LAST_100_TIME_FILE="$HOME/battery/.last_100_time"
+    
+    if [ ! -f "$LAST_100_TIME_FILE" ]; then
+        echo "$CURRENT_TIME" > "$LAST_100_TIME_FILE"
+    else
+        LAST_100_TIME=$(cat "$LAST_100_TIME_FILE")
+        TIME_AT_100=$((CURRENT_TIME - LAST_100_TIME))
+        
+        if [ "$TIME_AT_100" -gt 28800 ] 2>/dev/null; then
+            if should_notify "EXTENDED_100" 86400; then  # Once per day
+                HOURS_AT_100=$((TIME_AT_100 / 3600))
+                
+                osascript <<OSASCRIPT_EOF
+display notification "Battery has been at 100% for ${HOURS_AT_100} hours. Consider unplugging to preserve battery health." with title "🔋 Battery Health Tip" subtitle "Extended Time at Full Charge" sound name "Ping"
+OSASCRIPT_EOF
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ℹ️ Battery at 100% for ${HOURS_AT_100}h" >> "$LOG_FILE"
+            fi
+        fi
+    fi
+else
+    rm -f "$HOME/battery/.last_100_time" 2>/dev/null
+fi
+
+# 14. Charging in hot environment (>35°C while charging)
+if [ "$CHARGING" == "AC Power" ] && [ "$TEMP" != "N/A" ]; then
+    TEMP_NUM=$(echo "$TEMP" | cut -d. -f1)
+    AMPERAGE_NUM=$(echo "$AMPERAGE" | grep -Eo '^-?[0-9]+' || echo "0")
+    
+    if [ -n "$TEMP_NUM" ] && [ "$TEMP_NUM" -gt 35 ] 2>/dev/null && \
+       [ "$AMPERAGE_NUM" -gt 100 ] 2>/dev/null; then
+        if should_notify "HOT_CHARGING" 3600; then  # 1 hour
+            osascript <<OSASCRIPT_EOF
+display notification "Charging at ${TEMP}°C accelerates battery aging. Consider cooling down before charging." with title "🌡️ Charging Temperature Warning" subtitle "Temp: ${TEMP}°C (recommended: <30°C)" sound name "Basso"
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🌡️ Hot charging: ${TEMP}°C | ${AMPERAGE_NUM}mA" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
 # ============================================
-# CLEANUP OLD LOGS (keep last 1000 lines)
+# CLEANUP OLD LOGS (keep last 10000 lines)
 # ============================================
 if [ -f "$LOG_FILE" ]; then
     LINE_COUNT=$(wc -l < "$LOG_FILE")
-    if [ "$LINE_COUNT" -gt 1000 ]; then
-        if tail -1000 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null; then
+    if [ "$LINE_COUNT" -gt 10000 ]; then
+        if tail -10000 "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null; then
             mv "${LOG_FILE}.tmp" "$LOG_FILE"
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Log rotation failed" >> "$LOG_FILE" 2>/dev/null
