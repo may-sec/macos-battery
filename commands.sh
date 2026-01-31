@@ -5,10 +5,6 @@ bash ~/battery/install_battery_monitor.sh
 # 5. Verify it's running
 bash ~/battery/battery_manager.sh status
 
-
-# Check if running
-~/battery/battery_manager.sh status
-
 # View recent logs
 ~/battery/battery_manager.sh logs
 
