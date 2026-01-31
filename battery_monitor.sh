@@ -302,37 +302,98 @@ if [ -f "$STATE_FILE" ]; then
     
     # If more than 30 minutes elapsed, likely woke from sleep
     if [ "${TIME_ELAPSED:-0}" -gt 1800 ] 2>/dev/null; then
-        # Only log significant wakes (>2 hours OR significant drain)
-        SHOULD_LOG_WAKE=0
+        HOURS_ASLEEP=$((TIME_ELAPSED / 3600))
+        MINUTES_ASLEEP=$(((TIME_ELAPSED % 3600) / 60))
         
-        # Check if battery drained significantly during sleep
+        # Always log wake from sleep
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$LOG_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 WAKE FROM SLEEP DETECTED" >> "$LOG_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Sleep Duration: ${HOURS_ASLEEP}h ${MINUTES_ASLEEP}m (${TIME_ELAPSED}s total)" >> "$LOG_FILE"
+        
+        # Check if battery drained during sleep
         if [ "$CURRENT_PCT" != "$LAST_PCT" ]; then
             PCT_CHANGE=$((CURRENT_PCT - LAST_PCT))
             
-            if [ "${PCT_CHANGE:-0}" -lt -5 ] 2>/dev/null; then
-                # Significant drain - always log this
-                SHOULD_LOG_WAKE=1
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ Sleep drain: ${LAST_PCT}% → ${CURRENT_PCT}% (${PCT_CHANGE}% in $(($TIME_ELAPSED / 60))min)" >> "$LOG_FILE"
+            if [ "${PCT_CHANGE:-0}" -lt 0 ] 2>/dev/null; then
+                # Battery drained during sleep
+                DRAIN_AMOUNT=${PCT_CHANGE#-}
+                DRAIN_RATE_PER_HOUR=$(echo "scale=2; ($DRAIN_AMOUNT * 3600) / $TIME_ELAPSED" | bc 2>/dev/null || echo "0")
                 
-                # Show notification about drain
-                if should_notify "SLEEP_DRAIN" 3600; then
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📢 Sending sleep drain notification" >> "$LOG_FILE"
-                    osascript -e "display notification \"Battery drained ${PCT_CHANGE#-}% while asleep (${LAST_PCT}% → ${CURRENT_PCT}%) in $(($TIME_ELAPSED / 60)) minutes\" with title \"⚠️ Sleep Battery Drain\" sound name \"Basso\"" 2>> "$LOG_FILE"
-                    if [ $? -eq 0 ]; then
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Notification sent successfully" >> "$LOG_FILE"
-                    else
-                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ Notification failed with exit code $?" >> "$LOG_FILE"
-                    fi
-                else
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔕 Notification skipped (cooldown active)" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Battery DRAINED during sleep:" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Before sleep: ${LAST_PCT}%" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   After sleep:  ${CURRENT_PCT}%" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Total drain:  ${DRAIN_AMOUNT}%" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Drain rate:   ${DRAIN_RATE_PER_HOUR}%/hour" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Power source: ${LAST_STATUS} → ${CURRENT_STATUS}" >> "$LOG_FILE"
+                
+                # Check for threshold crossings during sleep
+                CROSSED_THRESHOLDS=""
+                
+                # Check 80% crossing
+                if [ "$LAST_PCT" -gt 80 ] 2>/dev/null && [ "$CURRENT_PCT" -le 80 ] 2>/dev/null; then
+                    CROSSED_THRESHOLDS="${CROSSED_THRESHOLDS}80%, "
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   ⚠️  CROSSED 80% threshold during sleep!" >> "$LOG_FILE"
                 fi
+                
+                # Check 50% crossing
+                if [ "$LAST_PCT" -gt 50 ] 2>/dev/null && [ "$CURRENT_PCT" -le 50 ] 2>/dev/null; then
+                    CROSSED_THRESHOLDS="${CROSSED_THRESHOLDS}50%, "
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   ⚠️  CROSSED 50% threshold during sleep!" >> "$LOG_FILE"
+                fi
+                
+                # Check 20% crossing
+                if [ "$LAST_PCT" -gt 20 ] 2>/dev/null && [ "$CURRENT_PCT" -le 20 ] 2>/dev/null; then
+                    CROSSED_THRESHOLDS="${CROSSED_THRESHOLDS}20%, "
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   🚨 CROSSED 20% threshold during sleep!" >> "$LOG_FILE"
+                fi
+                
+                # Remove trailing comma
+                CROSSED_THRESHOLDS=${CROSSED_THRESHOLDS%, }
+                
+                # Show notification for significant drain (>5%) OR threshold crossing
+                if [ "${DRAIN_AMOUNT}" -gt 5 ] 2>/dev/null || [ -n "$CROSSED_THRESHOLDS" ]; then
+                    if should_notify "SLEEP_DRAIN" 3600; then
+                        NOTIFICATION_MSG="Battery drained ${DRAIN_AMOUNT}% while asleep (${LAST_PCT}% → ${CURRENT_PCT}%)"
+                        if [ -n "$CROSSED_THRESHOLDS" ]; then
+                            NOTIFICATION_MSG="${NOTIFICATION_MSG}. Crossed: ${CROSSED_THRESHOLDS}"
+                        fi
+                        
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 📢 Sending sleep drain notification" >> "$LOG_FILE"
+                        osascript -e "display notification \"${NOTIFICATION_MSG}\" with title \"⚠️ Sleep Battery Drain (${HOURS_ASLEEP}h ${MINUTES_ASLEEP}m)\" subtitle \"Drain rate: ${DRAIN_RATE_PER_HOUR}%/hour\" sound name \"Basso\"" 2>> "$LOG_FILE"
+                        
+                        if [ $? -eq 0 ]; then
+                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 ✅ Notification sent successfully" >> "$LOG_FILE"
+                        else
+                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 ❌ Notification failed" >> "$LOG_FILE"
+                        fi
+                    else
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 🔕 Notification skipped (cooldown active)" >> "$LOG_FILE"
+                    fi
+                fi
+                
+            elif [ "${PCT_CHANGE:-0}" -gt 0 ] 2>/dev/null; then
+                # Battery charged during sleep
+                CHARGE_AMOUNT=$PCT_CHANGE
+                
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Battery CHARGED during sleep:" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Before sleep: ${LAST_PCT}%" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   After sleep:  ${CURRENT_PCT}%" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Total charge: +${CHARGE_AMOUNT}%" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Power source: ${LAST_STATUS} → ${CURRENT_STATUS}" >> "$LOG_FILE"
+                
+            else
+                # No battery change during sleep
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Battery level UNCHANGED during sleep (${CURRENT_PCT}%)" >> "$LOG_FILE"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Power source: ${CURRENT_STATUS}" >> "$LOG_FILE"
             fi
+        else
+            # No battery data from before sleep
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 No previous battery data to compare" >> "$LOG_FILE"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤   Current level: ${CURRENT_PCT}%" >> "$LOG_FILE"
         fi
         
-        # Log extended sleep (>2 hours) even without drain
-        if [ "${TIME_ELAPSED:-0}" -gt 7200 ] 2>/dev/null && [ $SHOULD_LOG_WAKE -eq 0 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 Extended sleep ($(($TIME_ELAPSED / 3600))h $(($TIME_ELAPSED % 3600 / 60))m)" >> "$LOG_FILE"
-        fi
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 💤 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
         
         FORCE_FULL_CHECK=1
     fi
@@ -1400,6 +1461,54 @@ if pmset -g batt | grep -q "charged" && [ "$CHARGING" == "AC Power" ]; then
 display notification "Unplug to preserve battery health" with title "✅ Battery Fully Charged (100%)" subtitle "Cycle ${CURRENT_CYCLE} | Health ${HEALTH_PCT}%" sound name "Hero"
 OSASCRIPT_EOF
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Fully charged: ${PERCENTAGE}% | Cycle: ${CURRENT_CYCLE} | Health: ${HEALTH_PCT}%" >> "$LOG_FILE"
+    fi
+fi
+
+# 8.5. Battery crossing 50% threshold (going down)
+if [ -n "$LAST_PCT" ] && [ -n "$CURRENT_PCT" ]; then
+    if [ "$LAST_PCT" -gt 50 ] 2>/dev/null && [ "$CURRENT_PCT" -le 50 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
+        if should_notify "CROSS_50_DOWN" 3600; then
+            osascript <<OSASCRIPT_EOF
+display notification "Battery dropped to ${CURRENT_PCT}%. Consider charging soon." with title "🔋 Battery at 50%" subtitle "Cycle ${CURRENT_CYCLE} | Health ${HEALTH_PCT}%" sound name "Ping"
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📉 Battery crossed 50% going down: ${LAST_PCT}% → ${CURRENT_PCT}%" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# 8.6. Battery crossing 50% threshold (going up)
+if [ -n "$LAST_PCT" ] && [ -n "$CURRENT_PCT" ]; then
+    if [ "$LAST_PCT" -lt 50 ] 2>/dev/null && [ "$CURRENT_PCT" -ge 50 ] 2>/dev/null && [ "$CHARGING" == "AC Power" ]; then
+        if should_notify "CROSS_50_UP" 3600; then
+            osascript <<OSASCRIPT_EOF
+display notification "Battery charged to ${CURRENT_PCT}%. Halfway there!" with title "🔋 Battery at 50%" subtitle "Cycle ${CURRENT_CYCLE} | Health ${HEALTH_PCT}%" sound name "Hero"
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📈 Battery crossed 50% going up: ${LAST_PCT}% → ${CURRENT_PCT}%" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# 8.7. Battery crossing 80% threshold (going down)
+if [ -n "$LAST_PCT" ] && [ -n "$CURRENT_PCT" ]; then
+    if [ "$LAST_PCT" -gt 80 ] 2>/dev/null && [ "$CURRENT_PCT" -le 80 ] 2>/dev/null && [ "$CHARGING" == "Battery Power" ]; then
+        if should_notify "CROSS_80_DOWN" 3600; then
+            osascript <<OSASCRIPT_EOF
+display notification "Battery at ${CURRENT_PCT}%. Still good capacity remaining." with title "🔋 Battery at 80%" subtitle "Cycle ${CURRENT_CYCLE} | Health ${HEALTH_PCT}%" sound name "Ping"
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📉 Battery crossed 80% going down: ${LAST_PCT}% → ${CURRENT_PCT}%" >> "$LOG_FILE"
+        fi
+    fi
+fi
+
+# 8.8. Battery crossing 80% threshold (going up)
+if [ -n "$LAST_PCT" ] && [ -n "$CURRENT_PCT" ]; then
+    if [ "$LAST_PCT" -lt 80 ] 2>/dev/null && [ "$CURRENT_PCT" -ge 80 ] 2>/dev/null && [ "$CHARGING" == "AC Power" ]; then
+        if should_notify "CROSS_80_UP" 3600; then
+            osascript <<OSASCRIPT_EOF
+display notification "Battery charged to ${CURRENT_PCT}%. Almost full!" with title "🔋 Battery at 80%" subtitle "Cycle ${CURRENT_CYCLE} | Health ${HEALTH_PCT}%" sound name "Hero"
+OSASCRIPT_EOF
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📈 Battery crossed 80% going up: ${LAST_PCT}% → ${CURRENT_PCT}%" >> "$LOG_FILE"
+        fi
     fi
 fi
 
